@@ -6,7 +6,7 @@
     "zanphp/exception": "dev-master",
     "zanphp/coroutine": "dev-laogui",
     "zanphp/timer": "dev-master",
-    "zanphp/rpc-context": "dev-master"
+    "zanphp/rpc-context": "dev-laogui"
   },
   "autoload": {
     "psr-4": {
