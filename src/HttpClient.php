@@ -5,6 +5,7 @@ namespace ZanPHP\HttpClient;
 
 use ZanPHP\Contracts\Config\Repository;
 use ZanPHP\Contracts\Debugger\Tracer;
+use ZanPHP\Contracts\Foundation\Application;
 use ZanPHP\Contracts\Trace\Constant;
 use ZanPHP\Contracts\Trace\Trace;
 use ZanPHP\Coroutine\Context;
@@ -17,6 +18,7 @@ use ZanPHP\HttpClient\Exception\HostNotFoundException;
 use ZanPHP\HttpClient\Exception\HttpClientClosedException;
 use ZanPHP\HttpClient\Exception\HttpClientTimeoutException;
 use ZanPHP\RpcContext\RpcContext;
+use ZanPHP\Support\Arr;
 use ZanPHP\Timer\Timer;
 
 
@@ -42,6 +44,10 @@ class HttpClient implements Async
     private $setting = [];
 
     private $params;
+
+    //压测请求mock参数
+    private $mockParams;
+
     private $header = [];
     private $body;
 
@@ -57,6 +63,8 @@ class HttpClient implements Async
     /** @var Tracer  */
     private $debuggerTrace;
     private $debuggerTid;
+
+    private $serviceChainValue = null;
 
     private $useHttpProxy = false;
 
@@ -193,6 +201,11 @@ class HttpClient implements Async
         return $this;
     }
 
+    public function setMockParams($params)
+    {
+        $this->mockParams = $params;
+    }
+
     public function setParams($params)
     {
         $this->params = $params;
@@ -220,6 +233,21 @@ class HttpClient implements Async
 
     public function build()
     {
+        if ($this->useHttpProxy) {
+            $value = (yield getContext("service-chain-value"));
+            if (is_array($value) && isset($value["zan_test"]) && $value["zan_test"] === true) {
+
+                /**
+                 * 压测流量访问外网时丢弃params,使用mock设置的params, GET和DELETE的mock params存于doraemon-real-url头部字段,
+                 * POST和PUT的mock params存于body之中
+                */
+                if ($this->method === 'POST' || $this->method === 'PUT') {
+                    $this->setBody($this->mockParams);
+                }
+                return;
+            }
+        }
+
         if ($this->method === 'GET') {
             if (!empty($this->params)) {
                 $this->uri = $this->uri . '?' . http_build_query($this->params);
@@ -245,6 +273,7 @@ class HttpClient implements Async
             $this->trace = $ctx->get("trace");
             $this->debuggerTrace = $ctx->get('debugger_trace');
             $this->rpcContext = $ctx->get("rpc-context");
+            $this->serviceChainValue = $ctx->get("service-chain-value");
         }
 
         if ($this->useHttpProxy) {
@@ -333,6 +362,27 @@ class HttpClient implements Async
         }
     }
 
+    private function addMockServerHeader() {
+        if ($this->useHttpProxy) {
+            $value = $this->serviceChainValue;
+            if (is_array($value) && isset($value["zan_test"]) && $value["zan_test"] === true) {
+                $this->header["Content-type"] = "application/x-www-form-urlencoded";
+                $scheme = $this->ssl ? "https://" : "http://";
+                $url = "$scheme{$this->host}:{$this->port}{$this->uri}";
+                if ($this->method === 'GET' || $this->method === 'DELETE') {
+                    if (!empty($this->mockParams)) {
+                        $url = $url . '?' . http_build_query($this->mockParams);
+                    }
+                }
+                $this->header["doraemon-real-url"] = $url;
+
+                /** @var Application $application */
+                $application = make(Application::class);
+                $this->header['app'] = $application->getName();
+            }
+        }
+    }
+
     private function buildHeader()
     {
         if ($this->port !== 80) {
@@ -359,6 +409,9 @@ class HttpClient implements Async
                 }
             }
         }
+
+        //压测流量增加首部
+        $this->addMockServerHeader();
 
         $this->client->setHeaders($this->header);
     }
@@ -391,10 +444,14 @@ class HttpClient implements Async
             ]);
             $response = new Response($cli->statusCode, $cli->headers, $cli->body);
             call_user_func($this->callback, $response);
-        } finally {
             $this->callback = null;
             $this->client->close();
+            return;
+        } catch (\Throwable $t) {
+        } catch (\Exception $e) {
         }
+        $this->callback = null;
+        $this->client->close();
     }
 
     public function onClose()
@@ -422,10 +479,14 @@ class HttpClient implements Async
             $exception = new HttpClientTimeoutException($message, 408, null, $metaData);
             $this->commitTrace($exception, "warn", $exception);
             call_user_func($this->callback, null, $exception);
-        } finally {
             $this->callback = null;
             $this->client->close();
+            return;
+        } catch (\Throwable $t) {
+        } catch (\Exception $e) {
         }
+        $this->callback = null;
+        $this->client->close();
     }
 
     public function dnsLookupTimeout()
@@ -471,6 +532,15 @@ class HttpClient implements Async
         return [$message, $metaData];
     }
 
+
+    /**
+     * @return array
+     */
+    public function getHeader()
+    {
+        return $this->header;
+    }
+  
     public function parseUrl($url)
     {
         $urlInfo = parse_url($url);
