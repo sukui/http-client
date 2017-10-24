@@ -8,9 +8,17 @@
     "zanphp/timer": "dev-master",
     "zanphp/rpc-context": "dev-master"
   },
+  "require-dev": {
+    "zanphp/testing":"dev-master"
+  },
   "autoload": {
     "psr-4": {
-      "ZanPHP\\HttpClient\\": "src/"
+      "ZanPHP\\HttpClient\\": "src"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "ZanPHP\\HttpClient\\Tests\\": "tests"
     }
   },
   "extra": {
